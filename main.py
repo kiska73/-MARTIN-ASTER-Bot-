@@ -12,7 +12,6 @@ API_SECRET = os.environ.get("BYBIT_API_SECRET")
 
 SYMBOL = "HYPEUSDT"
 
-# ==================== PARAMETRI GRIGLIA ====================
 BASE_QTY = 0.16
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 
@@ -22,6 +21,8 @@ pause_until_next_candle = False
 COOLDOWN = 20
 last_candle_ts = 0
 last_trade_time = 0
+
+# === NUOVE VARIABILI PER TP ===
 last_tp_price = 0.0
 last_tp_update_time = 0
 
@@ -32,14 +33,13 @@ session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 # ==========================================================
 
 def cancel_all_orders():
-    """Cancella tutti gli ordini aperti"""
     try:
         session.cancel_all_orders(category="linear", symbol=SYMBOL)
-        time.sleep(1.2)
+        time.sleep(1.0)
         print("✅ Tutti gli ordini cancellati")
         return True
     except Exception as e:
-        print(f"Errore cancel all orders: {e}")
+        print(f"Errore cancel all: {e}")
         return False
 
 
@@ -70,7 +70,6 @@ def get_volatility_data(symbol):
         return {
             'ts': df['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
-            'candle_low': round(df['low'].iloc[-1], 4),
             'lower_band': round(lower_band.iloc[-1], 4),
         }
     except Exception as e:
@@ -99,15 +98,14 @@ def should_check_candle():
 # ==========================================================
 # AVVIO BOT
 # ==========================================================
-print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.1)")
-print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | Modalità iniziale: {current_mode}\n")
+print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.2 - TP Fix)")
+print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY}\n")
 
 while True:
     try:
         now = time.time()
         price = get_current_price()
 
-        # Posizione corrente
         pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
         size = float(pos["size"])
         avg_price = float(pos.get("avgPrice", 0))
@@ -118,7 +116,7 @@ while True:
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f"📊 Candela 4H chiusa → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}%")
+                print(f"📊 Candela 4H → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}%")
 
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 40 else "AGGRESSIVE"
                 if new_mode != current_mode:
@@ -128,108 +126,88 @@ while True:
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     pause_until_next_candle = (distance <= 1.0)
-                    
-                    if pause_until_next_candle:
-                        print(f"⏸️  PAUSA ATTIVATA | Distanza Lower Band: {distance:.2f}%")
-                    else:
-                        print(f"▶️  Pausa disattivata | Distanza: {distance:.2f}%")
+                    print(f"{'⏸️ PAUSA ATTIVATA' if pause_until_next_candle else '▶️ Pausa disattivata'} | Distanza: {distance:.2f}%")
 
                 last_candle_ts = vol_data['ts']
 
-        # ==================== GESTIONE TP ====================
+        # ==================== GESTIONE TP (FIX SPAM) ====================
         if size > 0:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round(avg_price * (1 + tp_percent / 100), 4)
 
-            # Evita aggiornamenti inutili
-            if abs(target_tp - last_tp_price) > 0.001 and (now - last_tp_update_time > 8):
+            # Controllo molto più stretto per evitare spam
+            if (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
+                
                 tp_orders = [o for o in active_orders 
-                            if o["side"] == "Sell" 
-                            and o["orderType"] == "Limit"
-                            and o.get("reduceOnly", False)]
+                            if o.get("side") == "Sell" 
+                            and o.get("orderType") == "Limit"
+                            and o.get("reduceOnly") is True]
 
                 update_needed = False
 
                 if not tp_orders:
                     update_needed = True
-                elif len(tp_orders) > 1:
-                    update_needed = True
-                    for o in tp_orders:
-                        session.cancel_order(category="linear", symbol=SYMBOL, orderId=o["orderId"])
                 else:
                     current_tp = float(tp_orders[0]["price"])
+                    # Tolleranza più alta per evitare micro-differenze di Bybit
                     if abs(current_tp - target_tp) > 0.001:
                         update_needed = True
                         session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
 
                 if update_needed:
-                    try:
-                        session.place_order(
-                            category="linear", 
-                            symbol=SYMBOL, 
-                            side="Sell", 
-                            orderType="Limit",
-                            qty=str(size), 
-                            price=str(target_tp), 
-                            reduceOnly=True
-                        )
-                        last_tp_price = target_tp
-                        last_tp_update_time = now
-                        print(f"🎯 TP aggiornato → {target_tp} | Avg: {avg_price:.4f} | Mode: {current_mode}")
-                    except Exception as e:
-                        print(f"Errore placement TP: {e}")
+                    session.place_order(
+                        category="linear", 
+                        symbol=SYMBOL, 
+                        side="Sell", 
+                        orderType="Limit",
+                        qty=str(size), 
+                        price=str(target_tp), 
+                        reduceOnly=True
+                    )
+                    last_tp_price = target_tp
+                    last_tp_update_time = now
+                    print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.4f}")
 
         # ==================== NUOVA ENTRATA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print(f"⏸️  IN PAUSA | Prezzo attuale: {price:.4f}")
+                print(f"⏸️ IN PAUSA | Prezzo: {price:.4f}")
                 cancel_all_orders()
             else:
-                print(f"🟢 NUOVA ENTRATA in modalità {current_mode} @ {price:.4f} | BASE_QTY = {BASE_QTY}")
+                print(f"🟢 NUOVA ENTRATA @ {price:.4f} | Mode: {current_mode}")
                 cancel_all_orders()
                 time.sleep(1.5)
 
-                # Entrata Market
                 session.place_order(
-                    category="linear", 
-                    symbol=SYMBOL, 
-                    side="Buy", 
-                    orderType="Market", 
-                    qty=str(BASE_QTY)
+                    category="linear", symbol=SYMBOL, side="Buy", 
+                    orderType="Market", qty=str(BASE_QTY)
                 )
                 time.sleep(2.5)
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-                new_size = float(new_pos["size"])
-
-                if new_size > 0:
+                if float(new_pos["size"]) > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata confermata @ {avg:.4f} | Modalità: {current_mode}")
+                    print(f"✅ Entrata confermata @ {avg:.4f}")
 
                     accumulated_drop = 0
-                    mode = current_mode
-                    
                     for i in range(1, len(GRID_MULTIPLIERS)):
-                        spacing = get_spacing(i, mode)
+                        spacing = get_spacing(i, current_mode)
                         accumulated_drop += spacing
                         entry_price = round(avg * (1 - accumulated_drop / 100), 4)
                         qty = round(BASE_QTY * GRID_MULTIPLIERS[i], 4)
                         
                         session.place_order(
-                            category="linear", 
-                            symbol=SYMBOL, 
-                            side="Buy",
-                            orderType="Limit", 
-                            qty=str(qty), 
-                            price=str(entry_price)
+                            category="linear", symbol=SYMBOL, side="Buy",
+                            orderType="Limit", qty=str(qty), price=str(entry_price)
                         )
-                    
+
                     last_trade_time = now
-                    last_tp_price = 0.0  # Reset TP tracker
-                    print(f"📍 {len(GRID_MULTIPLIERS)-1} ordini Grid piazzati")
+                    last_tp_price = 0.0          # Reset importante
+                    last_tp_update_time = 0
+                    print(f"📍 {len(GRID_MULTIPLIERS)-1} ordini grid piazzati")
 
         time.sleep(5)
 
     except Exception as e:
-        print(f"⚠️ Errore generale: {e}")
+        print(f"⚠️ Errore: {e}")
         time.sleep(10)
