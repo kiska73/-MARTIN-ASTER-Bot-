@@ -12,7 +12,7 @@ API_SECRET = os.environ.get("BYBIT_API_SECRET")
 
 SYMBOL = "HYPEUSDT"
 
-BASE_QTY = 0.16
+BASE_QTY = 0.20
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 
 current_mode = "AGGRESSIVE"
