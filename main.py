@@ -5,33 +5,46 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIGURAZIONE
+# CONFIGURAZIONE PRINCIPALE - CAMBIA QUI
 # ==========================================================
-API_KEY = os.environ.get("BYBIT_API_KEY")
-API_SECRET = os.environ.get("BYBIT_API_SECRET")
-
 SYMBOL = "HYPEUSDT"
 BASE_QTY = 0.20
-PERC_PAUSE = 1.0                    # Distanza % dal lower band per attivare la pausa
+PERC_PAUSE = 1.0
 
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 
 current_mode = "AGGRESSIVE"
-pause_until_next_candle = False
-
 COOLDOWN = 20
+
+# ==========================================================
+# DECIMALI (modifica manualmente secondo la coppia)
+# ==========================================================
+PRICE_DECIMALS = 3      # HYPEUSDT → 3 
+QTY_DECIMALS = 2        # di solito 2 o 4
+
+# ==========================================================
+# VARIABILI DI STATO
+# ==========================================================
+pause_until_next_candle = False
 last_candle_ts = 0
 last_trade_time = 0
-
-# === TP ===
 last_tp_price = 0.0
 last_tp_update_time = 0
 
-session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
+session = HTTP(testnet=False, 
+               api_key=os.environ.get("BYBIT_API_KEY"), 
+               api_secret=os.environ.get("BYBIT_API_SECRET"))
 
 # ==========================================================
 # FUNZIONI
 # ==========================================================
+
+def round_price(price):
+    return round(price, PRICE_DECIMALS)
+
+def round_qty(qty):
+    return round(qty, QTY_DECIMALS)
+
 
 def cancel_all_orders():
     try:
@@ -123,8 +136,8 @@ def should_check_candle():
 # ==========================================================
 # AVVIO BOT
 # ==========================================================
-print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.3 - TP Fix + Close on Pause)")
-print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
+print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.4)")
+print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}% | Price Decimals: {PRICE_DECIMALS}\n")
 
 while True:
     try:
@@ -156,19 +169,18 @@ while True:
                     
                     print(f"{'⏸️ PAUSA ATTIVATA' if pause_until_next_candle else '▶️ Pausa disattivata'} | Distanza: {distance:.2f}%")
 
-                    # CHIUSURA FORZATA QUANDO ENTRA IN PAUSA
                     if pause_until_next_candle and not previous_pause:
                         print("🚨 PAUSA ATTIVATA → CHIUSURA FORZATA DI POSIZIONE E ORDINI")
                         cancel_all_orders()
                         close_position()
-                        last_trade_time = now + 40   # cooldown extra dopo chiusura forzata
+                        last_trade_time = now + 40
 
                 last_candle_ts = vol_data['ts']
 
         # ==================== GESTIONE TP ====================
         if size > 0:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
-            target_tp = round(avg_price * (1 + tp_percent / 100), 4)
+            target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
             if (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
                 
@@ -178,7 +190,6 @@ while True:
                             and o.get("reduceOnly") is True]
 
                 update_needed = False
-
                 if not tp_orders:
                     update_needed = True
                 else:
@@ -229,8 +240,8 @@ while True:
                     for i in range(1, len(GRID_MULTIPLIERS)):
                         spacing = get_spacing(i, current_mode)
                         accumulated_drop += spacing
-                        entry_price = round(avg * (1 - accumulated_drop / 100), 4)
-                        qty = round(BASE_QTY * GRID_MULTIPLIERS[i], 4)
+                        entry_price = round_price(avg * (1 - accumulated_drop / 100))
+                        qty = round_qty(BASE_QTY * GRID_MULTIPLIERS[i])
                         
                         session.place_order(
                             category="linear", symbol=SYMBOL, side="Buy",
