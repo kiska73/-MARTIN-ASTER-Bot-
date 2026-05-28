@@ -17,7 +17,7 @@ current_mode = "AGGRESSIVE"
 COOLDOWN = 20
 
 # ==========================================================
-# DECIMALI
+# DECIMALI (IMPORTANTE!)
 # ==========================================================
 PRICE_DECIMALS = 5
 QTY_DECIMALS = 0
@@ -30,7 +30,7 @@ last_candle_ts = 0
 last_trade_time = 0
 last_tp_price = 0.0
 last_tp_update_time = 0
-last_sl_price = 0.0   # ← nuovo: per evitare di peggiorare lo SL
+last_sl_price = 0.0   
 
 session = HTTP(testnet=False, 
                api_key=os.environ.get("BYBIT_API_KEY"), 
@@ -106,12 +106,13 @@ def get_volatility_data(symbol):
         
         bb_width_percent = ((sma.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
+        # CORRETTO: Adesso arrotonda usando PRICE_DECIMALS per non perdere precisione su BILL
         return {
             'ts': df['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
-            'lower_band': round(lower_band.iloc[-1], 4),
-            'low': round(df['low'].iloc[-1], 4),
-            'close': round(df['close'].iloc[-1], 4),
+            'lower_band': round(lower_band.iloc[-1], PRICE_DECIMALS),
+            'low': round(df['low'].iloc[-1], PRICE_DECIMALS),
+            'close': round(df['close'].iloc[-1], PRICE_DECIMALS),
         }
     except Exception as e:
         print(f"Errore Kline: {e}")
@@ -139,7 +140,7 @@ def should_check_candle():
 # ==========================================================
 # AVVIO BOT
 # ==========================================================
-print("🚀 BOT MASTER - Griglia + SL Dinamico 4H (v2.5)")
+print("🚀 BOT MASTER - Griglia + SL Dinamico 4H (v2.6)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -184,9 +185,8 @@ while True:
                     lower_band = vol_data['lower_band']
                     
                     if last_low < lower_band:
-                        sl_price = round_price(last_low * 0.999)  # piccolo buffer sotto il low
+                        sl_price = round_price(last_low * 0.999)  
                         
-                        # Non peggiorare lo SL (per long: non abbassarlo troppo)
                         if last_sl_price == 0 or sl_price > last_sl_price:
                             try:
                                 session.set_trading_stop(
@@ -208,8 +208,11 @@ while True:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
-            if (abs(target_tp - last_tp_price) > 0.00001) and (now - last_tp_update_time > 12):
-                # ... (logica TP invariata)
+            # Calcolato matematicamente: 5 decimali -> 0.00001
+            min_tick = 10 ** -PRICE_DECIMALS 
+
+            # CORRETTO: Gestione tolleranze dinamiche
+            if (abs(target_tp - last_tp_price) >= min_tick) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders 
                             if o.get("side") == "Sell" 
                             and o.get("orderType") == "Limit"
@@ -220,7 +223,7 @@ while True:
                     update_needed = True
                 else:
                     current_tp = float(tp_orders[0]["price"])
-                    if abs(current_tp - target_tp) > 0.00001:
+                    if abs(current_tp - target_tp) >= min_tick:
                         update_needed = True
                         try:
                             session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
@@ -239,15 +242,15 @@ while True:
                     )
                     last_tp_price = target_tp
                     last_tp_update_time = now
-                    print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.4f}")
+                    print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.5f}")
 
         # ==================== NUOVA ENTRATA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print(f"⏸️ IN PAUSA | Prezzo: {price:.4f}")
+                print(f"⏸️ IN PAUSA | Prezzo: {price:.5f}")
                 cancel_all_orders()
             else:
-                print(f"🟢 NUOVA ENTRATA @ {price:.4f} | Mode: {current_mode}")
+                print(f"🟢 NUOVA ENTRATA @ {price:.5f} | Mode: {current_mode}")
                 cancel_all_orders()
                 time.sleep(1.5)
 
@@ -260,7 +263,7 @@ while True:
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 if float(new_pos["size"]) > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata confermata @ {avg:.4f}")
+                    print(f"✅ Entrata confermata @ {avg:.5f}")
 
                     accumulated_drop = 0
                     for i in range(1, len(GRID_MULTIPLIERS)):
