@@ -220,7 +220,7 @@ while True:
                     update_needed = True
                 else:
                     current_tp = float(tp_orders[0]["price"])
-                    if abs(current_tp - target_tp) > 0.001:
+                    if abs(current_tp - target_tp) > 0.00003:
                         update_needed = True
                         try:
                             session.cancel_order(category="linear", symbol=SYMBOL, orderId=tp_orders[0]["orderId"])
