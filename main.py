@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 # CONFIGURAZIONE PRINCIPALE - BILLUSDT
 # ==========================================================
 SYMBOL = "BILLUSDT"
-BASE_QTY = 50
+BASE_QTY = 60
 PERC_PAUSE = 2.5
 
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
