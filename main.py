@@ -208,7 +208,7 @@ while True:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
-            if (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
+            if (abs(target_tp - last_tp_price) > 0.00005) and (now - last_tp_update_time > 12):
                 # ... (logica TP invariata)
                 tp_orders = [o for o in active_orders 
                             if o.get("side") == "Sell" 
