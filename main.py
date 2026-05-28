@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIGURAZIONE PRINCIPALE - CAMBIA QUI
+# CONFIGURAZIONE PRINCIPALE
 # ==========================================================
 SYMBOL = "HYPEUSDT"
 BASE_QTY = 0.20
@@ -17,10 +17,10 @@ current_mode = "AGGRESSIVE"
 COOLDOWN = 20
 
 # ==========================================================
-# DECIMALI (modifica manualmente secondo la coppia)
+# DECIMALI (HYPEUSDT → Price: 3, Qty: 2)
 # ==========================================================
-PRICE_DECIMALS = 3      # HYPEUSDT → 3 
-QTY_DECIMALS = 2        # di solito 2 o 4
+PRICE_DECIMALS = 3      
+QTY_DECIMALS = 2        
 
 # ==========================================================
 # VARIABILI DI STATO
@@ -36,7 +36,7 @@ session = HTTP(testnet=False,
                api_secret=os.environ.get("BYBIT_API_SECRET"))
 
 # ==========================================================
-# FUNZIONI
+# FUNZIONI OPERATIVE
 # ==========================================================
 
 def round_price(price):
@@ -91,7 +91,8 @@ def get_current_price():
 
 def get_volatility_data(symbol):
     try:
-        data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=42)
+        # Prende 41 candele per estrarre esattamente 40 candele chiuse stabili
+        data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=41)
         df = pd.DataFrame(data['result']['list'], 
                          columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
         
@@ -99,16 +100,20 @@ def get_volatility_data(symbol):
         df['low'] = df['low'].astype(float)
         df['ts'] = df['ts'].astype(int)
         
-        sma = df['close'].rolling(window=40).mean()
-        std = df['close'].rolling(window=40).std()
+        # ESCLUDI L'ULTIMA RIGA: analizziamo solo l'ora reale di chiusura passata
+        df_closed = df.iloc[:-1].copy()
+        
+        sma = df_closed['close'].rolling(window=40).mean()
+        std = df_closed['close'].rolling(window=40).std()
         lower_band = sma - (std * 2)
         
         bb_width_percent = ((sma.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
         return {
-            'ts': df['ts'].iloc[-1],
+            'ts': df_closed['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
             'lower_band': round(lower_band.iloc[-1], 4),
+            'low': round(df_closed['low'].iloc[-1], 4)
         }
     except Exception as e:
         print(f"Errore Kline: {e}")
@@ -130,19 +135,23 @@ def get_spacing(i, mode):
 
 def should_check_candle():
     now_utc = datetime.now(timezone.utc)
-    return (now_utc.hour % 4 == 0 and now_utc.minute == 0 and 5 <= now_utc.second <= 25)
+    # Esegue il check tra il secondo 20 e 40 per dare tempo a Bybit di consolidare la candela chiusa
+    return (now_utc.hour % 4 == 0 and now_utc.minute == 0 and 20 <= now_utc.second <= 40)
 
 
 # ==========================================================
-# AVVIO BOT
+# AVVIO BOT IN PRODUZIONE
 # ==========================================================
-print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.4)")
-print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}% | Price Decimals: {PRICE_DECIMALS}\n")
+print("🚀 BOT MASTER LIVE - Griglia Automatizzata v3.0")
+print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | Price Decimals: {PRICE_DECIMALS}\n")
 
 while True:
     try:
         now = time.time()
         price = get_current_price()
+        if not price:
+            time.sleep(2)
+            continue
 
         pos_data = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
         size = float(pos_data["size"])
@@ -150,34 +159,33 @@ while True:
 
         active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
 
-        # ==================== CONTROLLO CANDELA 4H ====================
+        # ==================== CONTROLLO IMPERATIVO CANDELA 4H ====================
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
-            if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f"📊 Candela 4H → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}%")
+            if vol_data and vol_data['ts'] > last_candle_ts:
+                print(f"📊 Analisi Candela Chiusa 4H → BB Width: {vol_data['bb_width']}%")
+
+                # Controllo di Emergenza sulla candela chiusa
+                if price < vol_data['lower_band']:
+                    print("🚨 CRITICO: Chiusura sotto la Lower Band rilevata!")
+                    cancel_all_orders()
+                    close_position()
+                    pause_until_next_candle = True
+                    last_trade_time = now + 60
+                else:
+                    # Se il mercato ha recuperato ed è sopra la banda, rimuove la pausa automatica
+                    if pause_until_next_candle:
+                        print("▶️ Il prezzo è tornato in zona sicura. Sblocco la pausa.")
+                        pause_until_next_candle = False
 
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 40 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode}")
                     current_mode = new_mode
 
-                if price and vol_data.get('lower_band'):
-                    distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
-                    
-                    previous_pause = pause_until_next_candle
-                    pause_until_next_candle = (distance <= PERC_PAUSE)
-                    
-                    print(f"{'⏸️ PAUSA ATTIVATA' if pause_until_next_candle else '▶️ Pausa disattivata'} | Distanza: {distance:.2f}%")
-
-                    if pause_until_next_candle and not previous_pause:
-                        print("🚨 PAUSA ATTIVATA → CHIUSURA FORZATA DI POSIZIONE E ORDINI")
-                        cancel_all_orders()
-                        close_position()
-                        last_trade_time = now + 40
-
                 last_candle_ts = vol_data['ts']
 
-        # ==================== GESTIONE TP ====================
+        # ==================== GESTIONE TARGET TAKE PROFIT ====================
         if size > 0:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
@@ -215,46 +223,53 @@ while True:
                     last_tp_update_time = now
                     print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.4f}")
 
-        # ==================== NUOVA ENTRATA ====================
+        # ==================== APERTURA NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print(f"⏸️ IN PAUSA | Prezzo: {price:.4f}")
+                print(f"⏸️ SISTEMA IN PAUSA DI PROTEZIONE | Prezzo: {price:.4f}")
                 cancel_all_orders()
             else:
-                print(f"🟢 NUOVA ENTRATA @ {price:.4f} | Mode: {current_mode}")
-                cancel_all_orders()
-                time.sleep(1.5)
+                vol_data = get_volatility_data(SYMBOL)
+                if vol_data:
+                    # Lo Stop Loss dinamico viene calcolato sul minimo (low) della candela chiusa precedente
+                    sl_price = round_price(vol_data['low'])
+                    
+                    print(f"🟢 NUOVA ENTRATA @ {price:.4f} | Mode: {current_mode} | SL Server: {sl_price}")
+                    cancel_all_orders()
+                    time.sleep(1.5)
 
-                session.place_order(
-                    category="linear", symbol=SYMBOL, side="Buy", 
-                    orderType="Market", qty=str(BASE_QTY)
-                )
-                time.sleep(2.5)
+                    # Apertura ordine di mercato INIETTANDO lo Stop Loss direttamente sui server di Bybit
+                    session.place_order(
+                        category="linear", symbol=SYMBOL, side="Buy", 
+                        orderType="Market", qty=str(BASE_QTY),
+                        stopLoss=str(sl_price), slTriggerBy="LastPrice"
+                    )
+                    time.sleep(2.5)
 
-                new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-                if float(new_pos["size"]) > 0:
-                    avg = float(new_pos["avgPrice"])
-                    print(f"✅ Entrata confermata @ {avg:.4f}")
+                    new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
+                    if float(new_pos["size"]) > 0:
+                        avg = float(new_pos["avgPrice"])
+                        print(f"✅ Entrata confermata @ {avg:.4f}")
 
-                    accumulated_drop = 0
-                    for i in range(1, len(GRID_MULTIPLIERS)):
-                        spacing = get_spacing(i, current_mode)
-                        accumulated_drop += spacing
-                        entry_price = round_price(avg * (1 - accumulated_drop / 100))
-                        qty = round_qty(BASE_QTY * GRID_MULTIPLIERS[i])
-                        
-                        session.place_order(
-                            category="linear", symbol=SYMBOL, side="Buy",
-                            orderType="Limit", qty=str(qty), price=str(entry_price)
-                        )
+                        accumulated_drop = 0
+                        for i in range(1, len(GRID_MULTIPLIERS)):
+                            spacing = get_spacing(i, current_mode)
+                            accumulated_drop += spacing
+                            entry_price = round_price(avg * (1 - accumulated_drop / 100))
+                            qty = round_qty(BASE_QTY * GRID_MULTIPLIERS[i])
+                            
+                            session.place_order(
+                                category="linear", symbol=SYMBOL, side="Buy",
+                                orderType="Limit", qty=str(qty), price=str(entry_price)
+                            )
 
-                    last_trade_time = now
-                    last_tp_price = 0.0
-                    last_tp_update_time = 0
-                    print(f"📍 {len(GRID_MULTIPLIERS)-1} ordini grid piazzati")
+                        last_trade_time = now
+                        last_tp_price = 0.0
+                        last_tp_update_time = 0
+                        print(f"📍 {len(GRID_MULTIPLIERS)-1} ordini grid piazati correttamente")
 
         time.sleep(5)
 
     except Exception as e:
-        print(f"⚠️ Errore: {e}")
+        print(f"⚠️ Errore critico nel Loop principale: {e}")
         time.sleep(10)
