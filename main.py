@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 # ==========================================================
 # CONFIGURAZIONE PRINCIPALE
 # ==========================================================
-SYMBOL = "HYPEUSDT"
-BASE_QTY = 0.20
-PERC_PAUSE = 1.0
+SYMBOL = "BILLUSDT"
+BASE_QTY = 50
+PERC_PAUSE = 3.0
 
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 
@@ -19,8 +19,8 @@ COOLDOWN = 20
 # ==========================================================
 # DECIMALI (HYPEUSDT → Price: 3, Qty: 2)
 # ==========================================================
-PRICE_DECIMALS = 3      
-QTY_DECIMALS = 2        
+PRICE_DECIMALS = 5    
+QTY_DECIMALS = 0      
 
 # ==========================================================
 # VARIABILI DI STATO
