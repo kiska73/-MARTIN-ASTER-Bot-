@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIGURAZIONE PRINCIPALE - BILLUSDT
+# CONFIGURAZIONE PRINCIPALE - CAMBIA QUI
 # ==========================================================
 SYMBOL = "BILLUSDT"
 BASE_QTY = 100
@@ -17,10 +17,10 @@ current_mode = "AGGRESSIVE"
 COOLDOWN = 20
 
 # ==========================================================
-# DECIMALI
+# DECIMALI (modifica manualmente secondo la coppia)
 # ==========================================================
-PRICE_DECIMALS = 5    # BILLUSDT → 5
-QTY_DECIMALS = 0      # Quantità intere senza decimali
+PRICE_DECIMALS = 5      # LABUSDT → 4 
+QTY_DECIMALS = 0        # di solito 2 o 4
 
 # ==========================================================
 # VARIABILI DI STATO
@@ -36,17 +36,8 @@ session = HTTP(testnet=False,
                api_secret=os.environ.get("BYBIT_API_SECRET"))
 
 # ==========================================================
-# FUNZIONI DI UTILITÀ E SICUREZZA
+# FUNZIONI
 # ==========================================================
-
-def safe_float(value):
-    """ Converte in float in modo sicuro, gestendo stringhe vuote o None dell'API """
-    if value is None or str(value).strip() == "":
-        return 0.0
-    try:
-        return float(value)
-    except ValueError:
-        return 0.0
 
 def round_price(price):
     return round(price, PRICE_DECIMALS)
@@ -69,7 +60,7 @@ def cancel_all_orders():
 def close_position():
     try:
         pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-        size = safe_float(pos.get("size"))
+        size = float(pos.get("size", 0))
         if size == 0:
             return False
             
@@ -93,7 +84,7 @@ def close_position():
 def get_current_price():
     try:
         ticker = session.get_tickers(category="linear", symbol=SYMBOL)
-        return safe_float(ticker['result']['list'][0]['lastPrice'])
+        return float(ticker['result']['list'][0]['lastPrice'])
     except:
         return None
 
@@ -145,7 +136,7 @@ def should_check_candle():
 # ==========================================================
 # AVVIO BOT
 # ==========================================================
-print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.5)")
+print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.4)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}% | Price Decimals: {PRICE_DECIMALS}\n")
 
 while True:
@@ -153,10 +144,9 @@ while True:
         now = time.time()
         price = get_current_price()
 
-        # Lettura sicura dei dati di posizione
         pos_data = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-        size = safe_float(pos_data.get("size"))
-        avg_price = safe_float(pos_data.get("avgPrice"))
+        size = float(pos_data["size"])
+        avg_price = float(pos_data.get("avgPrice", 0))
 
         active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
 
@@ -187,7 +177,7 @@ while True:
 
                 last_candle_ts = vol_data['ts']
 
-        # ==================== GESTIONE TAKE PROFIT ====================
+        # ==================== GESTIONE TP ====================
         if size > 0:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
@@ -203,7 +193,7 @@ while True:
                 if not tp_orders:
                     update_needed = True
                 else:
-                    current_tp = safe_float(tp_orders[0].get("price"))
+                    current_tp = float(tp_orders[0]["price"])
                     if abs(current_tp - target_tp) > 0.001:
                         update_needed = True
                         try:
@@ -223,15 +213,15 @@ while True:
                     )
                     last_tp_price = target_tp
                     last_tp_update_time = now
-                    print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.5f}")
+                    print(f"🎯 TP impostato → {target_tp} | Avg: {avg_price:.4f}")
 
         # ==================== NUOVA ENTRATA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
             if pause_until_next_candle:
-                print(f"⏸️ IN PAUSA | Prezzo: {price:.5f}")
+                print(f"⏸️ IN PAUSA | Prezzo: {price:.4f}")
                 cancel_all_orders()
             else:
-                print(f"🟢 NUOVA ENTRATA @ {price:.5f} | Mode: {current_mode}")
+                print(f"🟢 NUOVA ENTRATA @ {price:.4f} | Mode: {current_mode}")
                 cancel_all_orders()
                 time.sleep(1.5)
 
@@ -242,11 +232,9 @@ while True:
                 time.sleep(2.5)
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-                new_size = safe_float(new_pos.get("size"))
-                
-                if new_size > 0:
-                    avg = safe_float(new_pos.get("avgPrice"))
-                    print(f"✅ Entrata confermata @ {avg:.5f}")
+                if float(new_pos["size"]) > 0:
+                    avg = float(new_pos["avgPrice"])
+                    print(f"✅ Entrata confermata @ {avg:.4f}")
 
                     accumulated_drop = 0
                     for i in range(1, len(GRID_MULTIPLIERS)):
@@ -268,5 +256,5 @@ while True:
         time.sleep(5)
 
     except Exception as e:
-        print(f"⚠️ Errore nel ciclo principale: {e}")
+        print(f"⚠️ Errore: {e}")
         time.sleep(10)
