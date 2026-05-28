@@ -5,7 +5,7 @@ from pybit.unified_trading import HTTP
 from datetime import datetime, timezone
 
 # ==========================================================
-# CONFIGURAZIONE PRINCIPALE - CAMBIA QUI
+# CONFIGURAZIONE PRINCIPALE
 # ==========================================================
 SYMBOL = "BILLUSDT"
 BASE_QTY = 100
@@ -17,10 +17,10 @@ current_mode = "AGGRESSIVE"
 COOLDOWN = 20
 
 # ==========================================================
-# DECIMALI (modifica manualmente secondo la coppia)
+# DECIMALI
 # ==========================================================
-PRICE_DECIMALS = 5      # LABUSDT → 4 
-QTY_DECIMALS = 0        # di solito 2 o 4
+PRICE_DECIMALS = 5
+QTY_DECIMALS = 0
 
 # ==========================================================
 # VARIABILI DI STATO
@@ -30,6 +30,7 @@ last_candle_ts = 0
 last_trade_time = 0
 last_tp_price = 0.0
 last_tp_update_time = 0
+last_sl_price = 0.0   # ← nuovo: per evitare di peggiorare lo SL
 
 session = HTTP(testnet=False, 
                api_key=os.environ.get("BYBIT_API_KEY"), 
@@ -96,8 +97,8 @@ def get_volatility_data(symbol):
                          columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
         
         df['close'] = df['close'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['ts'] = df['ts'].astype(int)
+        df['low']   = df['low'].astype(float)
+        df['ts']    = df['ts'].astype(int)
         
         sma = df['close'].rolling(window=40).mean()
         std = df['close'].rolling(window=40).std()
@@ -109,6 +110,8 @@ def get_volatility_data(symbol):
             'ts': df['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
             'lower_band': round(lower_band.iloc[-1], 4),
+            'low': round(df['low'].iloc[-1], 4),
+            'close': round(df['close'].iloc[-1], 4),
         }
     except Exception as e:
         print(f"Errore Kline: {e}")
@@ -136,8 +139,8 @@ def should_check_candle():
 # ==========================================================
 # AVVIO BOT
 # ==========================================================
-print("🚀 BOT MASTER - Griglia a Fasce Corretta (v2.4)")
-print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}% | Price Decimals: {PRICE_DECIMALS}\n")
+print("🚀 BOT MASTER - Griglia + SL Dinamico 4H (v2.5)")
+print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
     try:
@@ -154,8 +157,9 @@ while True:
         if should_check_candle():
             vol_data = get_volatility_data(SYMBOL)
             if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f"📊 Candela 4H → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}%")
+                print(f"📊 Candela 4H → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}% | Low: {vol_data['low']}")
 
+                # Regime detection
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 40 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f"🔄 CAMBIO MODALITÀ → {new_mode}")
@@ -163,17 +167,39 @@ while True:
 
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
-                    
                     previous_pause = pause_until_next_candle
                     pause_until_next_candle = (distance <= PERC_PAUSE)
                     
                     print(f"{'⏸️ PAUSA ATTIVATA' if pause_until_next_candle else '▶️ Pausa disattivata'} | Distanza: {distance:.2f}%")
 
                     if pause_until_next_candle and not previous_pause:
-                        print("🚨 PAUSA ATTIVATA → CHIUSURA FORZATA DI POSIZIONE E ORDINI")
+                        print("🚨 PAUSA ATTIVATA → CHIUSURA FORZATA")
                         cancel_all_orders()
                         close_position()
                         last_trade_time = now + 40
+
+                # ==================== SL DINAMICO ====================
+                if size > 0:
+                    last_low = vol_data['low']
+                    lower_band = vol_data['lower_band']
+                    
+                    if last_low < lower_band:
+                        sl_price = round_price(last_low * 0.999)  # piccolo buffer sotto il low
+                        
+                        # Non peggiorare lo SL (per long: non abbassarlo troppo)
+                        if last_sl_price == 0 or sl_price > last_sl_price:
+                            try:
+                                session.set_trading_stop(
+                                    category="linear",
+                                    symbol=SYMBOL,
+                                    stopLoss=str(sl_price)
+                                )
+                                last_sl_price = sl_price
+                                print(f"🛑 SL DINAMICO IMPOSTATO @ {sl_price} | Low 4H sotto BB")
+                            except Exception as e:
+                                print(f"Errore set SL: {e}")
+                        else:
+                            print(f"⚠️ SL proposto {sl_price} peggiore del precedente ({last_sl_price}), ignorato")
 
                 last_candle_ts = vol_data['ts']
 
@@ -183,7 +209,7 @@ while True:
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
             if (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
-                
+                # ... (logica TP invariata)
                 tp_orders = [o for o in active_orders 
                             if o.get("side") == "Sell" 
                             and o.get("orderType") == "Limit"
@@ -251,6 +277,7 @@ while True:
                     last_trade_time = now
                     last_tp_price = 0.0
                     last_tp_update_time = 0
+                    last_sl_price = 0.0
                     print(f"📍 {len(GRID_MULTIPLIERS)-1} ordini grid piazzati")
 
         time.sleep(5)
