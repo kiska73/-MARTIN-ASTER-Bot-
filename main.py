@@ -84,9 +84,13 @@ def get_current_price():
 
 def get_volatility_data(symbol):
     try:
-        data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=42)
-        df = pd.DataFrame(data['result']['list'], 
+        # Recuperiamo 150 candele per dare profondità storica al calcolo della media
+        data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=150)
+        
+        # [::-1] Inverte la lista per ordinarla in modo cronologico (dalla più vecchia alla più recente)
+        df = pd.DataFrame(data['result']['list'][::-1], 
                          columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
+        
         df['close'] = df['close'].astype(float)
         df['low']   = df['low'].astype(float)
         df['ts']    = df['ts'].astype(int)
@@ -98,7 +102,7 @@ def get_volatility_data(symbol):
         upper_band = sma + (std * 2)
         lower_band = sma - (std * 2)
         
-        # Formula BB Width reale basata sulla distanza totale
+        # Formula BB Width reale basata sulla distanza totale all'ultimo indice [-1] (candela corrente)
         bb_width_percent = ((upper_band.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
         return {
@@ -131,7 +135,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.8 - Market TP Fix)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.9 - Time & TP Alignment)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -201,12 +205,12 @@ while True:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
-            # CONTROLLO PREVENTIVO: Se il prezzo attuale è GIÀ oltre il target TP
+            # CONTROLLO PREVENTIVO: Se il prezzo attuale è GIÀ oltre il target TP, chiudi a mercato
             if price and price >= target_tp:
                 print(f" Prezzo attuale ({price}) superiore o uguale al TP target ({target_tp}). Chiudo a mercato!")
                 cancel_all_orders()
                 close_position()
-                last_trade_time = now  # Aggiorna il timing per rispettare il cooldown prima del prossimo ciclo
+                last_trade_time = now  
                 last_tp_price = 0.0
                 last_tp_update_time = 0
                 last_sl_price = 0.0
@@ -245,7 +249,7 @@ while True:
                         last_tp_update_time = now
                         print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f}")
                     except Exception as e:
-                        # Se Bybit rifiuta l'ordine Limit (es. prezzo crossato all'ultimo millisecondo), forza la chiusura
+                        # Se Bybit rifiuta l'ordine Limit (prezzo crossato nell'ultimo millisecondo), forza la chiusura
                         print(f" Errore nell'inserimento del TP Limit: {e}. Eseguo chiusura d'emergenza a mercato.")
                         cancel_all_orders()
                         close_position()
@@ -256,7 +260,6 @@ while True:
 
         # ==================== GESTIONE NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
-            # Variabile sicura per gestire un eventuale temporaneo None dall'API dei prezzi
             safe_price = price if price is not None else 0.0
             
             if pause_until_next_candle:
