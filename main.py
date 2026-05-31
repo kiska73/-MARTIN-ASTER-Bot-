@@ -153,7 +153,7 @@ while True:
                 print(f" Analisi Mercato → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}% | Low 4H: {vol_data['low']}")
 
                 # Regime detection (Seleziona CONSERVATIVE se BB Width > 30%)
-                new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 40 else "AGGRESSIVE"
+                new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 70 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f" CAMBIO MODALITÀ → da {current_mode} a {new_mode}")
                     current_mode = new_mode
