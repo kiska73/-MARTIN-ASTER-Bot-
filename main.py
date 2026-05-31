@@ -131,7 +131,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.7 - Stable)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.8 - Market TP Fix)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -152,7 +152,7 @@ while True:
             if vol_data and vol_data['ts'] != last_candle_ts:
                 print(f" Analisi Mercato → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}% | Low 4H: {vol_data['low']}")
 
-                # Regime detection (Seleziona CONSERVATIVE se BB Width > 30%)
+                # Regime detection (Seleziona CONSERVATIVE se BB Width > 70%)
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 70 else "AGGRESSIVE"
                 if new_mode != current_mode:
                     print(f" CAMBIO MODALITÀ → da {current_mode} a {new_mode}")
@@ -201,7 +201,18 @@ while True:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
-            if (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
+            # CONTROLLO PREVENTIVO: Se il prezzo attuale è GIÀ oltre il target TP
+            if price and price >= target_tp:
+                print(f" Prezzo attuale ({price}) superiore o uguale al TP target ({target_tp}). Chiudo a mercato!")
+                cancel_all_orders()
+                close_position()
+                last_trade_time = now  # Aggiorna il timing per rispettare il cooldown prima del prossimo ciclo
+                last_tp_price = 0.0
+                last_tp_update_time = 0
+                last_sl_price = 0.0
+            
+            # Altrimenti, gestisci l'ordine Limit normalmente
+            elif (abs(target_tp - last_tp_price) > 0.0005) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders 
                             if o.get("side") == "Sell" 
                             and o.get("orderType") == "Limit"
@@ -220,18 +231,28 @@ while True:
                             pass
 
                 if update_needed:
-                    session.place_order(
-                        category="linear", 
-                        symbol=SYMBOL, 
-                        side="Sell", 
-                        orderType="Limit",
-                        qty=str(size), 
-                        price=str(target_tp), 
-                        reduceOnly=True
-                    )
-                    last_tp_price = target_tp
-                    last_tp_update_time = now
-                    print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f}")
+                    try:
+                        session.place_order(
+                            category="linear", 
+                            symbol=SYMBOL, 
+                            side="Sell", 
+                            orderType="Limit",
+                            qty=str(size), 
+                            price=str(target_tp), 
+                            reduceOnly=True
+                        )
+                        last_tp_price = target_tp
+                        last_tp_update_time = now
+                        print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f}")
+                    except Exception as e:
+                        # Se Bybit rifiuta l'ordine Limit (es. prezzo crossato all'ultimo millisecondo), forza la chiusura
+                        print(f" Errore nell'inserimento del TP Limit: {e}. Eseguo chiusura d'emergenza a mercato.")
+                        cancel_all_orders()
+                        close_position()
+                        last_trade_time = now
+                        last_tp_price = 0.0
+                        last_tp_update_time = 0
+                        last_sl_price = 0.0
 
         # ==================== GESTIONE NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
