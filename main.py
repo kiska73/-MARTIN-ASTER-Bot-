@@ -84,7 +84,7 @@ def get_current_price():
 
 def get_volatility_data(symbol):
     try:
-        # Recuperiamo 150 candele per dare profondità storica al calcolo della media
+        # Recuperiamo 150 candele per dare profondità storica al calcolo
         data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=150)
         
         # [::-1] Inverte la lista per ordinarla in modo cronologico (dalla più vecchia alla più recente)
@@ -95,21 +95,22 @@ def get_volatility_data(symbol):
         df['low']   = df['low'].astype(float)
         df['ts']    = df['ts'].astype(int)
         
+        # RIPRISTINATO A 40 PERIODI COME DA CONFIGURAZIONE ORIGINALE
         sma = df['close'].rolling(window=40).mean()
         std = df['close'].rolling(window=40).std()
         
-        # Calcolo bande completo (allineato a TradingView)
         upper_band = sma + (std * 2)
         lower_band = sma - (std * 2)
         
-        # Formula BB Width reale basata sulla distanza totale all'ultimo indice [-1] (candela corrente)
+        # BB Width calcolata sulla candela in corso [-1] per reattività immediata
         bb_width_percent = ((upper_band.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
         return {
             'ts': df['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
             'lower_band': round(lower_band.iloc[-1], 4),
-            'low': round(df['low'].iloc[-1], 4),
+            # CONFERMATO: Minimo (low) della candela precedente definitivamente CHIUSA [-2]
+            'low': round(df['low'].iloc[-2], 4),
             'close': round(df['close'].iloc[-1], 4),
         }
     except Exception as e:
@@ -135,7 +136,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v2.9 - Time & TP Alignment)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.1 - BB40 & Closed Candle SL)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -154,7 +155,7 @@ while True:
             vol_data = get_volatility_data(SYMBOL)
             
             if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f" Analisi Mercato → {datetime.now().strftime('%H:%M:%S')} | BB Width: {vol_data['bb_width']}% | Low 4H: {vol_data['low']}")
+                print(f" Analisi Mercato → {datetime.now().strftime('%H:%M:%S')} | BB Width (40): {vol_data['bb_width']}% | Low 4H Chiusa: {vol_data['low']}")
 
                 # Regime detection (Seleziona CONSERVATIVE se BB Width > 70%)
                 new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 70 else "AGGRESSIVE"
@@ -175,13 +176,13 @@ while True:
                         close_position()
                         last_trade_time = now + 40
 
-                # ==================== SL DINAMICO ====================
+                # ==================== SL DINAMICO (Basato su candela chiusa) ====================
                 if size > 0:
-                    last_low = vol_data['low']
+                    last_low = vol_data['low'] # Valore estratto da iloc[-2] (candela chiusa)
                     lower_band = vol_data['lower_band']
                     
                     if last_low < lower_band:
-                        sl_price = round_price(last_low * 0.999)  # Buffer di sicurezza dello 0.1% sotto il low
+                        sl_price = round_price(last_low * 0.999)  # Buffer dello 0.1% sotto il minimo della candela chiusa
                         
                         # Impedisce al bot di peggiorare lo SL (non sposta lo SL verso il basso)
                         if last_sl_price == 0 or sl_price > last_sl_price:
@@ -192,7 +193,7 @@ while True:
                                     stopLoss=str(sl_price)
                                 )
                                 last_sl_price = sl_price
-                                print(f" SL DINAMICO IMPOSTATO @ {sl_price} | Minimo 4H sotto la BB Inferiore")
+                                print(f" SL DINAMICO IMPOSTATO @ {sl_price} | Minimo Candela 4H Chiusa sotto la BB Inferiore")
                             except Exception as e:
                                 print(f"Errore set SL: {e}")
                         else:
@@ -205,7 +206,7 @@ while True:
             tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
-            # CONTROLLO PREVENTIVO: Se il prezzo attuale è GIÀ oltre il target TP, chiudi a mercato
+            # CONTROLLO PREVENTIVO: Se il prezzo attuale è GIÀ oltre il target TP, chiudi subito a mercato
             if price and price >= target_tp:
                 print(f" Prezzo attuale ({price}) superiore o uguale al TP target ({target_tp}). Chiudo a mercato!")
                 cancel_all_orders()
@@ -249,7 +250,7 @@ while True:
                         last_tp_update_time = now
                         print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f}")
                     except Exception as e:
-                        # Se Bybit rifiuta l'ordine Limit (prezzo crossato nell'ultimo millisecondo), forza la chiusura
+                        # Se Bybit rifiuta l'ordine Limit per motivi di esecuzione rapida, forza la chiusura a mercato
                         print(f" Errore nell'inserimento del TP Limit: {e}. Eseguo chiusura d'emergenza a mercato.")
                         cancel_all_orders()
                         close_position()
