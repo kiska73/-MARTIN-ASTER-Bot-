@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 # ==============================================================================
 # CONFIGURAZIONE PRINCIPALE
 # ==============================================================================
-SYMBOL = "BILLUSDT"
-BASE_QTY = 100
+SYMBOL = "ASTERUSDT"
+BASE_QTY = 15
 PERC_PAUSE = 2.5
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 current_mode = "AGGRESSIVE"
@@ -17,7 +17,7 @@ COOLDOWN = 20
 # ==============================================================================
 # DECIMALI
 # ==============================================================================
-PRICE_DECIMALS = 5
+PRICE_DECIMALS = 4
 QTY_DECIMALS = 0 
 
 # ==============================================================================
@@ -30,6 +30,7 @@ last_tp_price = 0.0
 last_tp_update_time = 0
 last_sl_price = 0.0   
 
+# Connessione alle API di Bybit
 session = HTTP(testnet=False, 
                api_key=os.environ.get("BYBIT_API_KEY"), 
                api_secret=os.environ.get("BYBIT_API_SECRET"))
@@ -102,9 +103,13 @@ def get_volatility_data(symbol):
         
         bb_width_percent = ((upper_band.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
         
+        # Calcolo distanza percentuale: quanto il prezzo di chiusura è distante/sopra la SMA40
+        distanza_da_sma = ((df['close'].iloc[-1] - sma.iloc[-1]) / sma.iloc[-1]) * 100
+        
         return {
             'ts': df['ts'].iloc[-1],
             'bb_width': round(bb_width_percent, 2),
+            'dist_sma': round(distanza_da_sma, 2),
             'lower_band': round(lower_band.iloc[-1], 4),
             'low': round(df['low'].iloc[-2], 4),
             'close': round(df['close'].iloc[-1], 4),
@@ -114,16 +119,21 @@ def get_volatility_data(symbol):
         return None
 
 def get_spacing(i, mode):
-    if mode == "AGGRESSIVE":
-        if i <= 3:   return 1.0
-        elif i <= 6: return 1.2
-        elif i <= 9: return 1.5
-        else:        return 1.8
-    else:
+    if mode == "PANIC":
+        if i <= 3:   return 3.0
+        elif i <= 6: return 3.6
+        elif i <= 9: return 4.5
+        else:        return 5.4
+    elif mode == "CONSERVATIVE":
         if i <= 3:   return 2.0
         elif i <= 6: return 2.4
         elif i <= 9: return 2.8
         else:        return 3.2
+    else: # AGGRESSIVE
+        if i <= 3:   return 1.0
+        elif i <= 6: return 1.2
+        elif i <= 9: return 1.5
+        else:        return 1.8
 
 def should_check_candle():
     now_utc = datetime.now(timezone.utc)
@@ -132,7 +142,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.3 - Anti Sincro Fix)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.4 - Panic Mode Integrato)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -146,7 +156,7 @@ while True:
 
         active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
 
-        # Se la posizione è zero, puliamo preventivamente le variabili di tracciamento del TP
+        # Se la posizione è zero, puliamo preventivamente le variabili di tracciamento
         if size == 0:
             last_tp_price = 0.0
             last_sl_price = 0.0
@@ -156,22 +166,34 @@ while True:
             vol_data = get_volatility_data(SYMBOL)
             
             if vol_data and vol_data['ts'] != last_candle_ts:
-                print(f" Analisi Mercato → {datetime.now().strftime('%H:%M:%S')} | BB Width (40): {vol_data['bb_width']}% | Low 4H Chiusa: {vol_data['low']}")
+                dist_sma = vol_data.get('dist_sma', 0)
+                bb_width = vol_data.get('bb_width', 0)
+                
+                print(f"\n Analisi Mercato → {datetime.now().strftime('%H:%M:%S')}")
+                print(f"   | BB Width (40): {bb_width}% | Distanza da SMA40: {dist_sma}% | Low 4H Chiusa: {vol_data['low']}")
 
-                new_mode = "CONSERVATIVE" if vol_data.get('bb_width', 0) > 70 else "AGGRESSIVE"
+                # LOGICA REATTIVA DI CAMBIO MODALITÀ (Soglie calibrate sul grafico di LAB)
+                if dist_sma >= 75.0 or bb_width > 120.0:
+                    new_mode = "PANIC"
+                elif dist_sma >= 30.0 or bb_width > 60.0:
+                    new_mode = "CONSERVATIVE"
+                else:
+                    new_mode = "AGGRESSIVE"
+
                 if new_mode != current_mode:
-                    print(f" CAMBIO MODALITÀ → da {current_mode} a {new_mode}")
+                    print(f" 🔥 CAMBIO MODALITÀ OPERATIVA → da {current_mode} a {new_mode} 🔥")
                     current_mode = new_mode
 
+                # Controllo della pausa vicino alla Banda Inferiore
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     previous_pause = pause_until_next_candle
                     pause_until_next_candle = (distance <= PERC_PAUSE)
                     
-                    print(f"{' [PAUSA ATTIVA]' if pause_until_next_candle else ' [Pausa disattivata]'} | Distanza da Lower Band: {distance:.2f}%")
+                    print(f"{'   [PAUSA ATTIVA]' if pause_until_next_candle else '   [Pausa disattivata]'} | Distanza da Lower Band: {distance:.2f}%")
 
                     if pause_until_next_candle and not previous_pause:
-                        print(" PAUSA ATTIVATA → CHIUSURA FORZATA DELLE POSIZIONI")
+                        print("   PAUSA ATTIVATA → CHIUSURA FORZATA DELLE POSIZIONI PER SICUREZZA")
                         cancel_all_orders()
                         close_position()
                         last_trade_time = now + 40
@@ -187,7 +209,7 @@ while True:
                             try:
                                 session.set_trading_stop(category="linear", symbol=SYMBOL, stopLoss=str(sl_price))
                                 last_sl_price = sl_price
-                                print(f" SL DINAMICO IMPOSTATO @ {sl_price}")
+                                print(f"   SL DINAMICO IMPOSTATO @ {sl_price}")
                             except Exception as e:
                                 print(f"Errore set SL: {e}")
 
@@ -195,7 +217,13 @@ while True:
 
         # ==================== GESTIONE TARGET PROFIT (TP) ====================
         if size > 0:
-            tp_percent = 1.20 if current_mode == "CONSERVATIVE" else 0.90
+            if current_mode == "PANIC":
+                tp_percent = 1.80  # TP più largo per sfruttare il forte rimbalzo post-dump
+            elif current_mode == "CONSERVATIVE":
+                tp_percent = 1.20
+            else:
+                tp_percent = 0.90
+                
             target_tp = round_price(avg_price * (1 + tp_percent / 100))
 
             if price and price >= target_tp:
@@ -207,7 +235,7 @@ while True:
                 last_tp_update_time = 0
                 last_sl_price = 0.0
             
-            elif (abs(target_tp - last_tp_price) > 0.00001) and (now - last_tp_update_time > 12):
+            elif (abs(target_tp - last_tp_price) > 0.0001) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
                 update_needed = False
@@ -230,7 +258,7 @@ while True:
                         )
                         last_tp_price = target_tp
                         last_tp_update_time = now
-                        print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f}")
+                        print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f} | Target: +{tp_percent}%")
                     except Exception as e:
                         print(f" Errore inserimento TP Limit (Possibile sfasamento): {e}. Eseguo reset ed emergenza.")
                         cancel_all_orders()
@@ -250,7 +278,7 @@ while True:
             else:
                 print(f" AVVIO GRIGLIA @ {safe_price:.4f} | Regime Attivo: {current_mode}")
                 cancel_all_orders()
-                time.sleep(2.0) # Aumentato leggermente per dare tempo a Bybit di cancellare tutto
+                time.sleep(2.0) 
 
                 try:
                     session.place_order(category="linear", symbol=SYMBOL, side="Buy", orderType="Market", qty=str(BASE_QTY))
@@ -260,14 +288,14 @@ while True:
                     time.sleep(10)
                     continue
 
-                time.sleep(3.0) # Tempo di consolidamento della posizione su Bybit
+                time.sleep(3.0) # Consolidamento posizione
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 current_size = float(new_pos["size"])
                 
                 if current_size > 0:
                     avg = float(new_pos["avgPrice"])
-                    print(f" Primo ordine eseguito a mercato @ {avg:.4f}. Preparo la griglia...")
+                    print(f" Primo ordine eseguito a mercato @ {avg:.4f}. Generazione livelli griglia...")
 
                     accumulated_drop = 0
                     success_orders = 0
@@ -291,7 +319,7 @@ while True:
                     last_tp_price = 0.0
                     last_tp_update_time = 0
                     last_sl_price = 0.0
-                    print(f" Configurazione completata: {success_orders} ordini limit inseriti correttamente.")
+                    print(f" Griglia completata: {success_orders} ordini limit inseriti. Copertura totale regime: {accumulated_drop:.1f}%")
 
         time.sleep(5)
 
