@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 # ==============================================================================
 # CONFIGURAZIONE PRINCIPALE
 # ==============================================================================
-SYMBOL = "ASTERUSDT"
-BASE_QTY = 15
-PERC_PAUSE = 2.5
+SYMBOL = "UAIUSDT"
+BASE_QTY = 50
+PERC_PAUSE = 1
 GRID_MULTIPLIERS = [1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13]
 current_mode = "AGGRESSIVE"
 COOLDOWN = 20
@@ -17,7 +17,7 @@ COOLDOWN = 20
 # ==============================================================================
 # DECIMALI
 # ==============================================================================
-PRICE_DECIMALS = 4
+PRICE_DECIMALS = 5
 QTY_DECIMALS = 0 
 
 # ==============================================================================
@@ -247,7 +247,7 @@ while True:
                 last_tp_update_time = 0
                 last_sl_price = 0.0
             
-            elif (abs(target_tp - last_tp_price) > 0.0001) and (now - last_tp_update_time > 12):
+            elif (abs(target_tp - last_tp_price) > 0.00001) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
                 update_needed = False
