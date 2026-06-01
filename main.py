@@ -31,9 +31,11 @@ last_tp_update_time = 0
 last_sl_price = 0.0   
 
 # Connessione alle API di Bybit
-session = HTTP(testnet=False, 
-               api_key=os.environ.get("BYBIT_API_KEY"), 
-               api_secret=os.environ.get("BYBIT_API_SECRET"))
+session = HTTP(
+    testnet=False, 
+    api_key=os.environ.get("BYBIT_API_KEY"), 
+    api_secret=os.environ.get("BYBIT_API_SECRET")
+)
 
 # ==============================================================================
 # FUNZIONI UTILITARIE
@@ -62,7 +64,11 @@ def close_position():
         size = float(pos.get("size", 0))
         if size == 0:
             return False
-        side = "Sell" if size > 0 else "Buy"
+        
+        # Rileva la direzione reale. Se per errore rileva uno Short, lo chiude con un Buy.
+        pos_side = pos.get("side", "Buy")
+        side = "Sell" if pos_side == "Buy" else "Buy"
+        
         session.place_order(
             category="linear", 
             symbol=SYMBOL, 
@@ -71,7 +77,7 @@ def close_position():
             qty=str(abs(size)), 
             reduceOnly=True
         )
-        print(f" POSIZIONE CHIUSA A MERCATO | Size: {size}")
+        print(f" POSIZIONE CHIUSA A MERCATO | Side Originale: {pos_side} | Size: {size}")
         time.sleep(1.5)
         return True
     except Exception as e:
@@ -89,7 +95,7 @@ def get_volatility_data(symbol):
     try:
         data = session.get_kline(category="linear", symbol=symbol, interval="240", limit=150)
         df = pd.DataFrame(data['result']['list'][::-1], 
-                         columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
+                          columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'turnover'])
         
         df['close'] = df['close'].astype(float)
         df['low']   = df['low'].astype(float)
@@ -102,8 +108,6 @@ def get_volatility_data(symbol):
         lower_band = sma - (std * 2)
         
         bb_width_percent = ((upper_band.iloc[-1] - lower_band.iloc[-1]) / sma.iloc[-1]) * 100
-        
-        # Calcolo distanza percentuale: quanto il prezzo di chiusura è distante/sopra la SMA40
         distanza_da_sma = ((df['close'].iloc[-1] - sma.iloc[-1]) / sma.iloc[-1]) * 100
         
         return {
@@ -142,7 +146,7 @@ def should_check_candle():
 # ==============================================================================
 # AVVIO BOT E CICLO PRINCIPALE
 # ==============================================================================
-print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.4 - Panic Mode Integrato)")
+print(" BOT MASTER - Griglia + SL Dinamico 4H (v3.5 - Solo LONG Blindato)")
 print(f"Symbol: {SYMBOL} | BASE_QTY: {BASE_QTY} | PERC_PAUSE: {PERC_PAUSE}%\n")
 
 while True:
@@ -150,13 +154,21 @@ while True:
         now = time.time()
         price = get_current_price()
         
+        # Lettura e filtraggio della posizione (Riconosce solo i LONG)
         pos_data = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
-        size = float(pos_data["size"])
-        avg_price = float(pos_data.get("avgPrice", 0))
+        pos_side = pos_data.get("side", "None")
+        raw_size = float(pos_data["size"])
 
+        # Forza size a 0 se la posizione NON è un LONG ("Buy") attivo
+        if pos_side == "Buy" and raw_size > 0:
+            size = raw_size
+        else:
+            size = 0.0
+
+        avg_price = float(pos_data.get("avgPrice", 0))
         active_orders = session.get_open_orders(category="linear", symbol=SYMBOL)["result"]["list"]
 
-        # Se la posizione è zero, puliamo preventivamente le variabili di tracciamento
+        # Se non ci sono posizioni LONG attive, resettiamo le variabili di tracking dello stop/TP
         if size == 0:
             last_tp_price = 0.0
             last_sl_price = 0.0
@@ -172,7 +184,7 @@ while True:
                 print(f"\n Analisi Mercato → {datetime.now().strftime('%H:%M:%S')}")
                 print(f"   | BB Width (40): {bb_width}% | Distanza da SMA40: {dist_sma}% | Low 4H Chiusa: {vol_data['low']}")
 
-                # LOGICA REATTIVA DI CAMBIO MODALITÀ (Soglie calibrate sul grafico di LAB)
+                # Logica cambio modalità
                 if dist_sma >= 75.0 or bb_width > 120.0:
                     new_mode = "PANIC"
                 elif dist_sma >= 30.0 or bb_width > 60.0:
@@ -184,7 +196,7 @@ while True:
                     print(f" 🔥 CAMBIO MODALITÀ OPERATIVA → da {current_mode} a {new_mode} 🔥")
                     current_mode = new_mode
 
-                # Controllo della pausa vicino alla Banda Inferiore
+                # Controllo pausa vicino alla Banda Inferiore
                 if price and vol_data.get('lower_band'):
                     distance = ((price - vol_data['lower_band']) / vol_data['lower_band']) * 100
                     previous_pause = pause_until_next_candle
@@ -218,7 +230,7 @@ while True:
         # ==================== GESTIONE TARGET PROFIT (TP) ====================
         if size > 0:
             if current_mode == "PANIC":
-                tp_percent = 1.80  # TP più largo per sfruttare il forte rimbalzo post-dump
+                tp_percent = 1.80  
             elif current_mode == "CONSERVATIVE":
                 tp_percent = 1.20
             else:
@@ -260,13 +272,14 @@ while True:
                         last_tp_update_time = now
                         print(f" TP impostato → {target_tp} | Prezzo Medio (Avg): {avg_price:.4f} | Target: +{tp_percent}%")
                     except Exception as e:
-                        print(f" Errore inserimento TP Limit (Possibile sfasamento): {e}. Eseguo reset ed emergenza.")
+                        print(f" Errore inserimento TP Limit: {e}. Eseguo reset ed emergenza.")
                         cancel_all_orders()
                         close_position()
                         last_trade_time = now
                         last_tp_price = 0.0
                         last_tp_update_time = 0
                         last_sl_price = 0.0
+                        time.sleep(10) # Pausa di sicurezza antipanico per le API
 
         # ==================== GESTIONE NUOVA ENTRATA + GRIGLIA ====================
         elif size == 0 and (now - last_trade_time > COOLDOWN):
@@ -288,12 +301,14 @@ while True:
                     time.sleep(10)
                     continue
 
-                time.sleep(3.0) # Consolidamento posizione
+                time.sleep(3.0) # Attesa consolidamento ordine su Bybit
 
                 new_pos = session.get_positions(category="linear", symbol=SYMBOL)["result"]["list"][0]
                 current_size = float(new_pos["size"])
+                current_side = new_pos.get("side", "")
                 
-                if current_size > 0:
+                # Genera la griglia SOLO se l'ordine market è andato a buon fine ed è un Long
+                if current_side == "Buy" and current_size > 0:
                     avg = float(new_pos["avgPrice"])
                     print(f" Primo ordine eseguito a mercato @ {avg:.4f}. Generazione livelli griglia...")
 
