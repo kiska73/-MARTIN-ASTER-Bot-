@@ -247,7 +247,8 @@ while True:
                 last_tp_update_time = 0
                 last_sl_price = 0.0
             
-            elif (abs(target_tp - last_tp_price) > 0.00001) and (now - last_tp_update_time > 12):
+            # COME DEVE ESSERE (Dinamico e automatico)
+            elif (abs(target_tp - last_tp_price) > (10 ** -PRICE_DECIMALS)) and (now - last_tp_update_time > 12):
                 tp_orders = [o for o in active_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit" and o.get("reduceOnly") is True]
 
                 update_needed = False
